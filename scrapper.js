@@ -331,31 +331,34 @@ class BuyeeScraper {
       await bidInput.fill(bidAmount.toString());
       console.log('Bid amount filled:', bidAmount);
   
-      // Save bid details
+      // Wait for and select plan with retry
+      let planSelect = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          planSelect = await page.waitForSelector('#bidYahoo_plan', {
+            timeout: 10000
+          });
+          if (planSelect) break;
+        } catch (err) {
+          if (i === 2) throw new Error('Plan selection not found after retries');
+          await page.waitForTimeout(2000);
+        }
+      }
+  
+      // Set plan value
+      await page.evaluate(() => {
+        const planSelect = document.querySelector('#bidYahoo_plan');
+        planSelect.value = '99';
+        planSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      console.log('Plan value set to 99');
+  
+      // Create bid details object (without file operations)
       const bidDetails = {
         productUrl,
         bidAmount,
         timestamp: new Date().toISOString()
       };
-  
-      // Update bids file
-      let bidFileData = { bids: [] };
-      if (fs.existsSync(bidFilePath)) {
-        const fileContent = fs.readFileSync(bidFilePath, "utf8");
-        bidFileData = JSON.parse(fileContent);
-      }
-  
-      const existingIndex = bidFileData.bids.findIndex(
-        (bid) => bid.productUrl === productUrl
-      );
-  
-      if (existingIndex !== -1) {
-        bidFileData.bids[existingIndex] = bidDetails;
-      } else {
-        bidFileData.bids.push(bidDetails);
-      }
-  
-      fs.writeFileSync(bidFilePath, JSON.stringify(bidFileData, null, 2));
   
       return {
         success: true,
@@ -383,7 +386,7 @@ class BuyeeScraper {
       if (browser) await browser.close().catch(console.error);
     }
   }
-
+  
   // Add retry utility
   async retry(fn, retries = 3) {
     for (let i = 0; i < retries; i++) {

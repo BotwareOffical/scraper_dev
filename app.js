@@ -73,11 +73,10 @@ app.post('/place-bid', async (req, res) => {
       return res.status(400).json(response);
     }
 
-    const updatedBids = JSON.parse(fs.readFileSync(bidFilePath, 'utf8'));
     res.json({
       success: true,
       message: response.message,
-      updatedBids,
+      details: response.details
     });
     
   } catch (error) {
