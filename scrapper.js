@@ -224,7 +224,7 @@ class BuyeeScraper {
     let page = null;
   
     try {
-      // Launch browser with necessary Heroku configurations
+      // Launch browser with necessary configurations
       browser = await chromium.launch({
         headless: true,
         args: [
@@ -237,6 +237,16 @@ class BuyeeScraper {
           '--single-process'
         ]
       });
+  
+      // Verify login.json exists and is valid
+      if (!fs.existsSync("login.json")) {
+        throw new Error('Login state not found. Please log in first.');
+      }
+  
+      const loginState = JSON.parse(fs.readFileSync("login.json", "utf8"));
+      if (!loginState.cookies || !loginState.cookies.length) {
+        throw new Error('Invalid login state. Please log in again.');
+      }
   
       // Create context with stored login state
       context = await browser.newContext({ 
@@ -257,68 +267,67 @@ class BuyeeScraper {
       // Navigate to product page
       console.log('Navigating to product page:', productUrl);
       await page.goto(productUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+        waitUntil: 'networkidle',
+        timeout: 60000
       });
   
-      await page.waitForTimeout(2000);
-  
-      // Debug: Log current URL and content before clicking
-      console.log('Current URL before click:', page.url());
-      console.log('Checking for bid button...');
-  
-      // Wait for and verify bid button
-      const bidButton = await page.waitForSelector('#bidNow', { 
-        state: 'visible',
-        timeout: 10000 
-      });
-  
-      if (!bidButton) {
-        throw new Error('Bid button not found');
+      // Handle any modal that might appear
+      try {
+        const modalFrame = await page.$('iframe.ab-in-app-message');
+        if (modalFrame) {
+          await page.evaluate(() => {
+            const modal = document.querySelector('.ab-iam-root');
+            if (modal) modal.remove();
+          });
+        }
+      } catch (modalError) {
+        console.log('No modal found or error removing modal:', modalError);
       }
   
-      console.log('Bid button found, preparing to click...');
+      // Wait for and verify bid button with retry logic
+      let bidButton = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          bidButton = await page.waitForSelector('#bidNow', { 
+            state: 'visible',
+            timeout: 10000 
+          });
+          if (bidButton) break;
+        } catch (err) {
+          if (i === 2) throw new Error('Bid button not found after retries');
+          await page.waitForTimeout(2000);
+        }
+      }
   
-      // Instead of waiting for navigation, we'll click and then manually navigate
-      await bidButton.click();
+      // Directly navigate to bid page instead of clicking
+      const bidUrl = `https://buyee.jp/bid/${auctionId}`;
+      console.log('Navigating to bid URL:', bidUrl);
       
-      // Wait a moment for any client-side processing
-      await page.waitForTimeout(1000);
-  
-      // Construct and navigate to the expected bid URL
-      const expectedBidUrl = `https://buyee.jp/bid/${auctionId}`;
-      console.log('Navigating to expected bid URL:', expectedBidUrl);
-  
-      await page.goto(expectedBidUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
+      await page.goto(bidUrl, {
+        waitUntil: 'networkidle',
+        timeout: 60000
       });
   
-      // Verify we're on the correct page
-      const currentUrl = page.url();
-      console.log('Current URL after navigation:', currentUrl);
-  
-      if (currentUrl.includes('signup/login')) {
-        throw new Error('Redirected to login page - session invalid');
+      // Check if we're redirected to login
+      if (page.url().includes('signup/login')) {
+        throw new Error('Session expired - please log in again');
       }
   
-      if (!currentUrl.includes('/bid/')) {
-        throw new Error('Failed to reach bid page');
+      // Wait for bid form with retry
+      let bidInput = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          bidInput = await page.waitForSelector('input[name="bidYahoo[price]"], #bidYahoo_price', {
+            timeout: 10000
+          });
+          if (bidInput) break;
+        } catch (err) {
+          if (i === 2) throw new Error('Bid form not found after retries');
+          await page.waitForTimeout(2000);
+        }
       }
-  
-      // Wait for bid form elements
-      console.log('Waiting for bid form elements...');
-      await Promise.race([
-        page.waitForSelector('input[name="bidYahoo[price]"]'),
-        page.waitForSelector('#bidYahoo_price')
-      ]);
   
       // Fill bid amount
-      const bidInput = await page.$('input[name="bidYahoo[price]"]') || await page.$('#bidYahoo_price');
-      if (!bidInput) {
-        throw new Error('Bid input field not found');
-      }
-  
       await bidInput.fill(bidAmount.toString());
       console.log('Bid amount filled:', bidAmount);
   
@@ -356,18 +365,16 @@ class BuyeeScraper {
   
     } catch (error) {
       console.error("Error during bid placement:", error);
-      
-      // Enhanced error info
-      const debugInfo = {
-        currentUrl: page?.url(),
-        error: error.message,
-        pageContent: await page?.content().catch(() => 'Could not get content')
-      };
+      await page?.screenshot({ path: 'bid-error.png' });
       
       return { 
         success: false, 
         message: `Failed to place bid: ${error.message}`,
-        debug: debugInfo
+        debug: {
+          currentUrl: page?.url(),
+          error: error.message,
+          pageContent: await page?.content().catch(() => 'Could not get content')
+        }
       };
   
     } finally {
