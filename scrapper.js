@@ -863,9 +863,7 @@ class BuyeeScraper {
   
   async checkLoginState() {
     try {
-      const loginData = JSON.parse(fs.readFileSync('login.json', 'utf8'));
-      console.log('Login file contents:', JSON.stringify(loginData, null, 2));
-      
+      const loginData = JSON.parse(fs.readFileSync('login.json', 'utf8'));      
       const cookies = loginData.cookies || [];
       const requiredCookies = ['otherbuyee', 'userProfile', 'userId'];
       
