@@ -387,9 +387,6 @@ class BuyeeScraper {
         throw new Error('Bid button not found with any selector');
       }
   
-      // Take screenshot before clicking
-      await page.screenshot({ path: 'pre-bid-click.png' });
-  
       // Click bid button with retry logic
       console.log('Clicking bid button...');
       let clickSuccess = false;
