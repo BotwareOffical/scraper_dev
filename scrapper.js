@@ -219,8 +219,9 @@ class BuyeeScraper {
   }
 
   async placeBid(productUrl, bidAmount) {
-    let context;
-    let page;
+    let browser = null;
+    let context = null;
+    let page = null;
   
     try {
       // First verify login state and get stored cookies
@@ -234,117 +235,29 @@ class BuyeeScraper {
         }
       }
   
-      // Enhanced browser launch configuration
-      this.browser = await chromium.launch({
+      // Launch browser once
+      browser = await chromium.launch({
         headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-web-security',
           '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-site-isolation-trials',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-extensions',
-          '--disable-component-extensions-with-background-pages',
-          '--disable-default-apps',
-          '--disable-features=TranslateUI',
-          '--disable-hooks',
-          '--disable-ipc-flooding-protection',
-          '--disable-popup-blocking',
-          '--disable-prompt-on-repost',
-          '--disable-renderer-backgrounding',
-          '--disable-sync',
-          '--force-color-profile=srgb',
-          '--disable-features=GlobalMediaControls',
-          '--metrics-recording-only',
-          '--no-first-run',
-          '--password-store=basic',
-          '--use-mock-keychain',
-          '--enable-features=NetworkService,NetworkServiceInProcess',
-          '--memory-pressure-off',
-          '--single-process',
-          '--max-old-space-size=256'
-        ],
-        env: {
-          ...process.env,
-          PLAYWRIGHT_SKIP_BROWSER_GC: '1',
-          PLAYWRIGHT_NODEJS_MAX_MEMORY: '256'
-        }
+          '--disable-site-isolation-trials'
+        ]
       });
   
-      // Create context with stored state - similar to 2FA approach
-      // Add stealth configuration
-      await this.browser.newContext().then(async (tmpContext) => {
-        const page = await tmpContext.newPage();
-        await page.addInitScript(() => {
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          window.chrome = { runtime: {} };
-          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        });
-        await tmpContext.close();
-      });
-  
-      context = await this.browser.newContext({
+      // Create context with stored state
+      context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'en-US',
         timezoneId: 'Europe/Berlin',
-        acceptDownloads: true,
-        storageState: 'login.json',
-        geolocation: { longitude: 13.404954, latitude: 52.520008 }, // Berlin coordinates
-        permissions: ['geolocation'],
-        extraHTTPHeaders: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'same-origin',
-          'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1'
-        }
+        storageState: 'login.json'
       });
   
+      // Create page
       page = await context.newPage();
-  
-      // Set up consistent request interception
-      await page.route('**/*', async route => {
-        const request = route.request();
-        
-        // Only modify specific request types
-        if (request.resourceType() === 'document' || request.resourceType() === 'fetch') {
-          const headers = request.headers();
-          
-          const newHeaders = {
-            ...headers,
-            'X-Requested-With': 'XMLHttpRequest'
-          };
-  
-          console.log(`Request headers for ${request.url()}:`, newHeaders);
-          await route.continue({ headers: newHeaders });
-        } else {
-          await route.continue();
-        }
-      });
-  
-      // Monitor navigation and responses
-      page.on('response', async response => {
-        const status = response.status();
-        const url = response.url();
-        console.log(`Response ${status} for ${url}`);
-        
-        if (status === 302 || status === 401 || status === 403) {
-          console.log('Important response headers:', response.headers());
-          try {
-            const text = await response.text();
-            console.log('Response content:', text);
-          } catch (e) {
-            console.log('Could not get response content');
-          }
-        }
-      });
   
       // Navigate with retry logic
       console.log('Navigating to:', productUrl);
@@ -371,7 +284,7 @@ class BuyeeScraper {
       for (const selector of bidButtonSelectors) {
         try {
           bidButton = await page.waitForSelector(selector, {
-            timeout: 60000,
+            timeout: 30000,
             state: 'visible'
           });
           if (bidButton) {
@@ -389,20 +302,8 @@ class BuyeeScraper {
   
       // Click bid button with retry logic
       console.log('Clicking bid button...');
-      let clickSuccess = false;
-      for (let attempt = 1; attempt <= 3 && !clickSuccess; attempt++) {
-        try {
-          await Promise.all([
-            page.waitForNavigation({ timeout: 60000 }),
-            bidButton.click()
-          ]);
-          clickSuccess = true;
-        } catch (e) {
-          console.log(`Bid button click attempt ${attempt} failed:`, e);
-          if (attempt === 3) throw e;
-          await page.waitForTimeout(2000);
-        }
-      }
+      await bidButton.click();
+      await page.waitForNavigation({ timeout: 30000 });
   
       // Verify we're on the correct page
       const currentUrl = page.url();
@@ -413,49 +314,26 @@ class BuyeeScraper {
       }
   
       // Fill bid form
-      const priceInput = await page.waitForSelector('#bidYahoo_price', { timeout: 60000 });
-      
-      await page.evaluate((amount) => {
-        // Fill price
-        const priceInput = document.querySelector('#bidYahoo_price');
-        priceInput.value = amount.toString();
-        priceInput.dispatchEvent(new Event('input', { bubbles: true }));
-        priceInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await page.waitForSelector('#bidYahoo_price', { timeout: 30000 });
+      await page.fill('#bidYahoo_price', bidAmount.toString());
+      await page.waitForTimeout(500);
   
-        // Select plan
+      // Select plan and payment method
+      await page.evaluate(() => {
         const planSelect = document.querySelector('#bidYahoo_plan');
         planSelect.value = '99';
         planSelect.dispatchEvent(new Event('change', { bubbles: true }));
   
-        // Select payment method
         const paymentRadio = document.querySelector('#bidYahoo_payment_method_type_2');
         if (!paymentRadio.checked) {
           paymentRadio.click();
-          paymentRadio.dispatchEvent(new Event('change', { bubbles: true }));
         }
-      }, bidAmount);
+      });
   
-      // Wait for form submission
-      await page.waitForTimeout(2000);
-  
-      // Submit bid with retry
-      const submitButton = await page.waitForSelector('#bid_submit', { timeout: 60000 });
-      
-      console.log('Submitting bid...');
-      let submitSuccess = false;
-      for (let attempt = 1; attempt <= 3 && !submitSuccess; attempt++) {
-        try {
-          await Promise.all([
-            page.waitForNavigation({ timeout: 60000 }),
-            submitButton.click()
-          ]);
-          submitSuccess = true;
-        } catch (e) {
-          console.log(`Bid submission attempt ${attempt} failed:`, e);
-          if (attempt === 3) throw e;
-          await page.waitForTimeout(2000);
-        }
-      }
+      // Submit bid
+      const submitButton = await page.waitForSelector('#bid_submit', { timeout: 30000 });
+      await submitButton.click();
+      await page.waitForNavigation({ timeout: 30000 });
   
       // Verify success
       if (page.url().includes('/bid/confirm')) {
@@ -475,20 +353,18 @@ class BuyeeScraper {
         content: await page?.content().catch(() => 'Could not get content')
       };
       
-      await page?.screenshot({ path: 'bid-error.png' });
-      console.log('Debug info:', debugInfo);
-      
       return { 
         success: false, 
         message: `Bid failed: ${error.message}`,
         debug: debugInfo
       };
     } finally {
-      if (page) await page.close();
-      if (context) await context.close();
+      // Clean up resources in reverse order
+      if (page) await page.close().catch(console.error);
+      if (context) await context.close().catch(console.error);
+      if (browser) await browser.close().catch(console.error);
     }
   }
-
   // Add retry utility
   async retry(fn, retries = 3) {
     for (let i = 0; i < retries; i++) {
@@ -570,8 +446,6 @@ class BuyeeScraper {
     let page;
   
     try {
-      // Instead of deleting both files, just clear login.json if it exists
-      // Keep temp_login.json for 2FA flow
       console.log('Checking for existing login state...');
       try {
         if (fs.existsSync('login.json')) {
