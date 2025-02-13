@@ -360,6 +360,24 @@ class BuyeeScraper {
         timestamp: new Date().toISOString()
       };
   
+      // Check if we're on the right page before declaring success
+      const currentUrl = page.url();
+      if (currentUrl.includes('signup/login')) {
+        return {
+          success: false,
+          message: 'Session expired - please log in again'
+        };
+      }
+  
+      // Verify the form is still present
+      const formPresent = await page.$('#bidYahoo_price');
+      if (!formPresent) {
+        return {
+          success: false,
+          message: 'Could not verify bid form after setting values'
+        };
+      }
+  
       return {
         success: true,
         message: `Successfully navigated to bid page and entered amount ${bidAmount}`,
@@ -386,7 +404,7 @@ class BuyeeScraper {
       if (browser) await browser.close().catch(console.error);
     }
   }
-  
+    
   // Add retry utility
   async retry(fn, retries = 3) {
     for (let i = 0; i < retries; i++) {
