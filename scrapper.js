@@ -247,6 +247,13 @@ class BuyeeScraper {
   
       page = await context.newPage();
   
+      // Extract auction ID from product URL
+      const auctionIdMatch = productUrl.match(/auction\/([a-z0-9]+)/i);
+      if (!auctionIdMatch) {
+        throw new Error('Invalid product URL format');
+      }
+      const auctionId = auctionIdMatch[1];
+  
       // Navigate to product page
       console.log('Navigating to product page:', productUrl);
       await page.goto(productUrl, {
@@ -256,99 +263,74 @@ class BuyeeScraper {
   
       await page.waitForTimeout(2000);
   
-      // Check for bid button
-      const bidNowButton = page.locator("#bidNow");
-      const buttonExists = await bidNowButton.count();
-      
-      if (!buttonExists) {
-        console.warn('No "Bid Now" button found on the page');
-        return {
-          success: false,
-          message: 'No "Bid Now" button found on the page'
-        };
-      }
+      // Debug: Log current URL and content before clicking
+      console.log('Current URL before click:', page.url());
+      console.log('Checking for bid button...');
   
-      // Extract product details before clicking (from working local version)
-      const productDetails = await page.evaluate(() => {
-        let title = 'No Title';
-        const titleElements = [
-          document.querySelector('h1'),
-          document.querySelector('.itemName'),
-          document.querySelector('.itemInfo__name'),
-          document.title
-        ];
-        for (const titleEl of titleElements) {
-          if (titleEl && titleEl.textContent) {
-            title = titleEl.textContent.trim();
-            break;
-          }
-        }
-  
-        let thumbnailUrl = null;
-        const thumbnailSelectors = [
-          '.flexslider .slides img',
-          '.itemImg img',
-          '.mainImage img',
-          '.g-thumbnail__image'
-        ];
-  
-        for (const selector of thumbnailSelectors) {
-          const thumbnailElement = document.querySelector(selector);
-          if (thumbnailElement) {
-            thumbnailUrl = thumbnailElement.src || 
-                          thumbnailElement.getAttribute('data-src');
-            if (thumbnailUrl) {
-              thumbnailUrl = thumbnailUrl.split('?')[0];
-              break;
-            }
-          }
-        }
-  
-        return { title, thumbnailUrl };
+      // Wait for and verify bid button
+      const bidButton = await page.waitForSelector('#bidNow', { 
+        state: 'visible',
+        timeout: 10000 
       });
   
-      // Extract time remaining
-      const timeRemaining = await page
-        .locator('//span[contains(@class, "g-title")]/following-sibling::span')
-        .first()
-        .textContent()
-        .catch(() => 'Time Not Available');
-  
-      // Click bid button and wait for navigation
-      console.log('Clicking bid button...');
-      await Promise.all([
-        page.waitForNavigation({
-          waitUntil: 'domcontentloaded',
-          timeout: 30000
-        }),
-        bidNowButton.click()
-      ]);
-  
-      // Verify we're on the bid form page
-      const bidFormUrl = page.url();
-      console.log('Current URL after bid click:', bidFormUrl);
-  
-      if (bidFormUrl.includes('signup/login')) {
-        throw new Error('Session expired - redirected to login page');
+      if (!bidButton) {
+        throw new Error('Bid button not found');
       }
   
-      // Fill bid amount
-      const bidInput = page.locator('input[name="bidYahoo[price]"]');
-      await bidInput.waitFor({ state: 'visible', timeout: 5000 });
-      await bidInput.clear();
-      await bidInput.fill(bidAmount.toString());
+      console.log('Bid button found, preparing to click...');
   
-      // Save bid details to JSON (from working local version)
+      // Instead of waiting for navigation, we'll click and then manually navigate
+      await bidButton.click();
+      
+      // Wait a moment for any client-side processing
+      await page.waitForTimeout(1000);
+  
+      // Construct and navigate to the expected bid URL
+      const expectedBidUrl = `https://buyee.jp/bid/${auctionId}`;
+      console.log('Navigating to expected bid URL:', expectedBidUrl);
+  
+      await page.goto(expectedBidUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000
+      });
+  
+      // Verify we're on the correct page
+      const currentUrl = page.url();
+      console.log('Current URL after navigation:', currentUrl);
+  
+      if (currentUrl.includes('signup/login')) {
+        throw new Error('Redirected to login page - session invalid');
+      }
+  
+      if (!currentUrl.includes('/bid/')) {
+        throw new Error('Failed to reach bid page');
+      }
+  
+      // Wait for bid form elements
+      console.log('Waiting for bid form elements...');
+      await Promise.race([
+        page.waitForSelector('input[name="bidYahoo[price]"]'),
+        page.waitForSelector('#bidYahoo_price')
+      ]);
+  
+      // Fill bid amount
+      const bidInput = await page.$('input[name="bidYahoo[price]"]') || await page.$('#bidYahoo_price');
+      if (!bidInput) {
+        throw new Error('Bid input field not found');
+      }
+  
+      await bidInput.fill(bidAmount.toString());
+      console.log('Bid amount filled:', bidAmount);
+  
+      // Save bid details
       const bidDetails = {
         productUrl,
         bidAmount,
-        timestamp: timeRemaining.trim(),
-        title: productDetails.title,
-        thumbnailUrl: productDetails.thumbnailUrl
+        timestamp: new Date().toISOString()
       };
   
+      // Update bids file
       let bidFileData = { bids: [] };
-  
       if (fs.existsSync(bidFilePath)) {
         const fileContent = fs.readFileSync(bidFilePath, "utf8");
         bidFileData = JSON.parse(fileContent);
@@ -368,7 +350,7 @@ class BuyeeScraper {
   
       return {
         success: true,
-        message: `Bid of ${bidAmount} placed successfully`,
+        message: `Successfully navigated to bid page and entered amount ${bidAmount}`,
         details: bidDetails
       };
   
@@ -378,7 +360,8 @@ class BuyeeScraper {
       // Enhanced error info
       const debugInfo = {
         currentUrl: page?.url(),
-        error: error.message
+        error: error.message,
+        pageContent: await page?.content().catch(() => 'Could not get content')
       };
       
       return { 
@@ -386,6 +369,7 @@ class BuyeeScraper {
         message: `Failed to place bid: ${error.message}`,
         debug: debugInfo
       };
+  
     } finally {
       if (page) await page.close().catch(console.error);
       if (context) await context.close().catch(console.error);
