@@ -224,166 +224,166 @@ class BuyeeScraper {
     let page = null;
   
     try {
-      // Verify login state
-      let isLoggedIn = await this.checkLoginState();
-      if (!isLoggedIn) {
-        console.log('Session expired - refreshing login');
-        await this.refreshLoginSession();
-        isLoggedIn = await this.checkLoginState();
-        if (!isLoggedIn) {
-          throw new Error('Failed to refresh login session');
-        }
-      }
-  
-      // Load stored cookies
-      console.log('Loading stored login state...');
-      let loginState = JSON.parse(fs.readFileSync('login.json', 'utf8'));
-      const cookies = loginState.cookies || [];
-      
-      // Validate essential cookies
-      const requiredCookies = ['otherbuyee', 'userProfile', 'userId'];
-      const missingCookies = requiredCookies.filter(name => 
-        !cookies.some(cookie => cookie.name === name)
-      );
-      
-      if (missingCookies.length > 0) {
-        throw new Error(`Missing required cookies: ${missingCookies.join(', ')}`);
-      }
-  
-      // Launch browser with optimized settings
+      // Launch browser with necessary Heroku configurations
       browser = await chromium.launch({
         headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-site-isolation-trials',
-          '--disable-features=AutomationControlled',
-          '--ignore-certificate-errors',
-          '--memory-pressure-off',
-          '--no-default-browser-check',
-          '--disable-dev-shm-usage'
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process'
         ]
       });
   
-      // Create context with enhanced options
-      context = await browser.newContext({
+      // Create context with stored login state
+      context = await browser.newContext({ 
+        storageState: "login.json",
         viewport: { width: 1280, height: 720 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        locale: 'en-US',
-        timezoneId: 'Europe/Berlin',
-        bypassCSP: true,
-        extraHTTPHeaders: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
-        }
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       });
-  
-      // Add cookies with proper attributes
-      await context.addCookies(cookies.map(cookie => ({
-        ...cookie,
-        secure: cookie.secure || false,
-        httpOnly: cookie.httpOnly || false,
-        sameSite: cookie.sameSite || 'Lax',
-        expires: cookie.expires || (Date.now() / 1000 + 86400)
-      })));
   
       page = await context.newPage();
   
-      // Set shorter default timeout
-      page.setDefaultTimeout(15000);
-      page.setDefaultNavigationTimeout(15000);
-  
-      // First navigate to homepage to establish session
-      console.log('Initializing session...');
-      await page.goto('https://buyee.jp', {
+      // Navigate to product page
+      console.log('Navigating to product page:', productUrl);
+      await page.goto(productUrl, {
         waitUntil: 'domcontentloaded',
-        timeout: 10000
+        timeout: 30000
       });
   
-      // Wait briefly for session to establish
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2000);
   
-      // Navigate to product page with retry logic
-      console.log('Navigating to product page:', productUrl);
-      let navigationSuccess = false;
-      for (let attempt = 1; attempt <= 3 && !navigationSuccess; attempt++) {
-        try {
-          await page.goto(productUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: 15000
-          });
-          navigationSuccess = true;
-        } catch (e) {
-          console.log(`Navigation attempt ${attempt} failed:`, e);
-          if (attempt === 3) throw e;
-          await page.waitForTimeout(2000);
-        }
+      // Check for bid button
+      const bidNowButton = page.locator("#bidNow");
+      const buttonExists = await bidNowButton.count();
+      
+      if (!buttonExists) {
+        console.warn('No "Bid Now" button found on the page');
+        return {
+          success: false,
+          message: 'No "Bid Now" button found on the page'
+        };
       }
   
-      // Verify we're not on login page
-      if (page.url().includes('signup/login')) {
-        throw new Error('Redirected to login page - session invalid');
-      }
-  
-      // Wait for bid button to be available
-      console.log('Looking for bid button...');
-      const bidButtonSelectors = ['#bidNow', 'button[data-testid="bid-button"]', '.bid-button'];
-      let bidButton = null;
-  
-      for (const selector of bidButtonSelectors) {
-        try {
-          bidButton = await page.waitForSelector(selector, {
-            state: 'visible',
-            timeout: 5000
-          });
-          if (bidButton) {
-            console.log(`Found bid button with selector: ${selector}`);
+      // Extract product details before clicking (from working local version)
+      const productDetails = await page.evaluate(() => {
+        let title = 'No Title';
+        const titleElements = [
+          document.querySelector('h1'),
+          document.querySelector('.itemName'),
+          document.querySelector('.itemInfo__name'),
+          document.title
+        ];
+        for (const titleEl of titleElements) {
+          if (titleEl && titleEl.textContent) {
+            title = titleEl.textContent.trim();
             break;
           }
-        } catch {}
-      }
-  
-      if (!bidButton) {
-        throw new Error('Bid button not found');
-      }
-  
-      // Click bid button with JavaScript
-      await page.evaluate(() => {
-        const button = document.querySelector('#bidNow') || 
-                      document.querySelector('button[data-testid="bid-button"]') ||
-                      document.querySelector('.bid-button');
-        if (button) {
-          button.click();
         }
+  
+        let thumbnailUrl = null;
+        const thumbnailSelectors = [
+          '.flexslider .slides img',
+          '.itemImg img',
+          '.mainImage img',
+          '.g-thumbnail__image'
+        ];
+  
+        for (const selector of thumbnailSelectors) {
+          const thumbnailElement = document.querySelector(selector);
+          if (thumbnailElement) {
+            thumbnailUrl = thumbnailElement.src || 
+                          thumbnailElement.getAttribute('data-src');
+            if (thumbnailUrl) {
+              thumbnailUrl = thumbnailUrl.split('?')[0];
+              break;
+            }
+          }
+        }
+  
+        return { title, thumbnailUrl };
       });
   
-      // Wait for navigation after click
-      await page.waitForNavigation({
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
-      });
+      // Extract time remaining
+      const timeRemaining = await page
+        .locator('//span[contains(@class, "g-title")]/following-sibling::span')
+        .first()
+        .textContent()
+        .catch(() => 'Time Not Available');
   
-      // Save the updated session state
-      await context.storageState({ path: 'login.json' });
+      // Click bid button and wait for navigation
+      console.log('Clicking bid button...');
+      await Promise.all([
+        page.waitForNavigation({
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        }),
+        bidNowButton.click()
+      ]);
   
-      return { success: true, message: 'Successfully accessed bid page' };
+      // Verify we're on the bid form page
+      const bidFormUrl = page.url();
+      console.log('Current URL after bid click:', bidFormUrl);
+  
+      if (bidFormUrl.includes('signup/login')) {
+        throw new Error('Session expired - redirected to login page');
+      }
+  
+      // Fill bid amount
+      const bidInput = page.locator('input[name="bidYahoo[price]"]');
+      await bidInput.waitFor({ state: 'visible', timeout: 5000 });
+      await bidInput.clear();
+      await bidInput.fill(bidAmount.toString());
+  
+      // Save bid details to JSON (from working local version)
+      const bidDetails = {
+        productUrl,
+        bidAmount,
+        timestamp: timeRemaining.trim(),
+        title: productDetails.title,
+        thumbnailUrl: productDetails.thumbnailUrl
+      };
+  
+      let bidFileData = { bids: [] };
+  
+      if (fs.existsSync(bidFilePath)) {
+        const fileContent = fs.readFileSync(bidFilePath, "utf8");
+        bidFileData = JSON.parse(fileContent);
+      }
+  
+      const existingIndex = bidFileData.bids.findIndex(
+        (bid) => bid.productUrl === productUrl
+      );
+  
+      if (existingIndex !== -1) {
+        bidFileData.bids[existingIndex] = bidDetails;
+      } else {
+        bidFileData.bids.push(bidDetails);
+      }
+  
+      fs.writeFileSync(bidFilePath, JSON.stringify(bidFileData, null, 2));
+  
+      return {
+        success: true,
+        message: `Bid of ${bidAmount} placed successfully`,
+        details: bidDetails
+      };
   
     } catch (error) {
-      console.error('Bid process failed:', error);
+      console.error("Error during bid placement:", error);
       
-      // Enhanced error debugging
+      // Enhanced error info
       const debugInfo = {
-        url: page?.url(),
-        content: await page?.content().catch(() => 'Could not get content')
+        currentUrl: page?.url(),
+        error: error.message
       };
       
       return { 
         success: false, 
-        message: `Bid process failed: ${error.message}`,
+        message: `Failed to place bid: ${error.message}`,
         debug: debugInfo
       };
     } finally {
