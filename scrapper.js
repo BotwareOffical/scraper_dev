@@ -224,7 +224,7 @@ class BuyeeScraper {
     let page = null;
   
     try {
-      // First verify login state and get stored cookies
+      // Verify login state
       let isLoggedIn = await this.checkLoginState();
       if (!isLoggedIn) {
         console.log('Session expired - refreshing login');
@@ -235,18 +235,22 @@ class BuyeeScraper {
         }
       }
   
-      // Load stored login state
+      // Load stored cookies
       console.log('Loading stored login state...');
-      let loginState;
-      try {
-        loginState = JSON.parse(fs.readFileSync('login.json', 'utf8'));
-        console.log('Login state loaded with', loginState.cookies?.length || 0, 'cookies');
-      } catch (error) {
-        console.error('Failed to load login state:', error);
-        throw new Error('No valid login state found');
+      let loginState = JSON.parse(fs.readFileSync('login.json', 'utf8'));
+      const cookies = loginState.cookies || [];
+      
+      // Validate essential cookies
+      const requiredCookies = ['otherbuyee', 'userProfile', 'userId'];
+      const missingCookies = requiredCookies.filter(name => 
+        !cookies.some(cookie => cookie.name === name)
+      );
+      
+      if (missingCookies.length > 0) {
+        throw new Error(`Missing required cookies: ${missingCookies.join(', ')}`);
       }
   
-      // Launch browser with specific arguments
+      // Launch browser with optimized settings
       browser = await chromium.launch({
         headless: true,
         args: [
@@ -256,6 +260,10 @@ class BuyeeScraper {
           '--disable-features=IsolateOrigins,site-per-process',
           '--disable-site-isolation-trials',
           '--disable-features=AutomationControlled',
+          '--ignore-certificate-errors',
+          '--memory-pressure-off',
+          '--no-default-browser-check',
+          '--disable-dev-shm-usage'
         ]
       });
   
@@ -265,8 +273,7 @@ class BuyeeScraper {
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'en-US',
         timezoneId: 'Europe/Berlin',
-        acceptDownloads: true,
-        storageState: loginState, // Use full login state
+        bypassCSP: true,
         extraHTTPHeaders: {
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
@@ -275,76 +282,63 @@ class BuyeeScraper {
         }
       });
   
-      // Explicitly add cookies if they exist
-      if (loginState.cookies && loginState.cookies.length > 0) {
-        console.log('Adding stored cookies to context...');
-        await context.addCookies(loginState.cookies.map(cookie => ({
-          ...cookie,
-          secure: cookie.secure || false,
-          httpOnly: cookie.httpOnly || false,
-          sameSite: cookie.sameSite || 'Lax',
-          expires: cookie.expires || (Date.now() / 1000 + 86400)
-        })));
-      }
+      // Add cookies with proper attributes
+      await context.addCookies(cookies.map(cookie => ({
+        ...cookie,
+        secure: cookie.secure || false,
+        httpOnly: cookie.httpOnly || false,
+        sameSite: cookie.sameSite || 'Lax',
+        expires: cookie.expires || (Date.now() / 1000 + 86400)
+      })));
   
       page = await context.newPage();
   
-      // Add request interception for debugging
-      await page.route('**/*', async route => {
-        const request = route.request();
-        if (request.resourceType() === 'document' || request.resourceType() === 'fetch') {
-          console.log(`Request URL: ${request.url()}`);
-          console.log('Request headers:', request.headers());
-        }
-        await route.continue();
-      });
+      // Set shorter default timeout
+      page.setDefaultTimeout(15000);
+      page.setDefaultNavigationTimeout(15000);
   
-      // First navigate to Buyee homepage to ensure cookies are properly set
+      // First navigate to homepage to establish session
       console.log('Initializing session...');
       await page.goto('https://buyee.jp', {
-        waitUntil: 'networkidle',
-        timeout: 30000
+        waitUntil: 'domcontentloaded',
+        timeout: 10000
       });
   
-      // Verify login status
-      const isStillLoggedIn = await page.evaluate(() => {
-        return !document.querySelector('a[href*="signup/login"]');
-      });
+      // Wait briefly for session to establish
+      await page.waitForTimeout(1000);
   
-      if (!isStillLoggedIn) {
-        console.log('Session verification failed - attempting to restore...');
-        // Try to restore session from localStorage if available
-        await page.evaluate(() => {
-          const storedSession = localStorage.getItem('buyee_session');
-          if (storedSession) {
-            localStorage.setItem('buyee_session', storedSession);
-          }
-        });
-      }
-  
-      // Now navigate to the product page
+      // Navigate to product page with retry logic
       console.log('Navigating to product page:', productUrl);
-      await page.goto(productUrl, {
-        waitUntil: 'networkidle',
-        timeout: 30000
-      });
-  
-      // Check if redirected to login page
-      if (page.url().includes('signup/login')) {
-        console.error('Redirected to login page - session invalid');
-        throw new Error('Session authentication failed');
+      let navigationSuccess = false;
+      for (let attempt = 1; attempt <= 3 && !navigationSuccess; attempt++) {
+        try {
+          await page.goto(productUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+          });
+          navigationSuccess = true;
+        } catch (e) {
+          console.log(`Navigation attempt ${attempt} failed:`, e);
+          if (attempt === 3) throw e;
+          await page.waitForTimeout(2000);
+        }
       }
   
-      // Wait for bid button with multiple selectors
+      // Verify we're not on login page
+      if (page.url().includes('signup/login')) {
+        throw new Error('Redirected to login page - session invalid');
+      }
+  
+      // Wait for bid button to be available
       console.log('Looking for bid button...');
       const bidButtonSelectors = ['#bidNow', 'button[data-testid="bid-button"]', '.bid-button'];
       let bidButton = null;
-      
+  
       for (const selector of bidButtonSelectors) {
         try {
           bidButton = await page.waitForSelector(selector, {
-            timeout: 5000,
-            state: 'visible'
+            state: 'visible',
+            timeout: 5000
           });
           if (bidButton) {
             console.log(`Found bid button with selector: ${selector}`);
@@ -354,21 +348,29 @@ class BuyeeScraper {
       }
   
       if (!bidButton) {
-        throw new Error('Bid button not found - page may not be loaded correctly');
+        throw new Error('Bid button not found');
       }
   
-      // Click the bid button and wait for navigation
-      console.log('Clicking bid button...');
-      await Promise.all([
-        page.waitForNavigation({ timeout: 30000 }),
-        bidButton.click()
-      ]);
+      // Click bid button with JavaScript
+      await page.evaluate(() => {
+        const button = document.querySelector('#bidNow') || 
+                      document.querySelector('button[data-testid="bid-button"]') ||
+                      document.querySelector('.bid-button');
+        if (button) {
+          button.click();
+        }
+      });
+  
+      // Wait for navigation after click
+      await page.waitForNavigation({
+        waitUntil: 'domcontentloaded',
+        timeout: 15000
+      });
   
       // Save the updated session state
-      console.log('Saving updated session state...');
       await context.storageState({ path: 'login.json' });
   
-      return { success: true, message: 'Successfully navigated to bid page' };
+      return { success: true, message: 'Successfully accessed bid page' };
   
     } catch (error) {
       console.error('Bid process failed:', error);
@@ -376,7 +378,6 @@ class BuyeeScraper {
       // Enhanced error debugging
       const debugInfo = {
         url: page?.url(),
-        cookies: await context?.cookies(),
         content: await page?.content().catch(() => 'Could not get content')
       };
       
@@ -391,7 +392,7 @@ class BuyeeScraper {
       if (browser) await browser.close().catch(console.error);
     }
   }
-  
+
   // Add retry utility
   async retry(fn, retries = 3) {
     for (let i = 0; i < retries; i++) {
