@@ -1,0 +1,19 @@
+{
+    "bids": [
+      {
+        "productUrl": "https://buyee.jp/item/yahoo/auction/f1169497442?conversionType=YahooAuction_DirectSearch",
+        "bidAmount": 999,
+        "timestamp": "2025-01-27T12:00:00Z"
+      },
+      {
+        "productUrl": "https://buyee.jp/item/yahoo/auction/x123456789",
+        "bidAmount": 500,
+        "timestamp": "2025-01-27T11:30:00Z"
+      },
+      {
+        "productUrl": "https://buyee.jp/item/yahoo/auction/f1169497442?conversionType=YahooAuction_DirectSearch",
+        "bidAmount": 999,
+        "timestamp": "2025-01-27T13:15:00Z"
+      }
+    ]
+  }
