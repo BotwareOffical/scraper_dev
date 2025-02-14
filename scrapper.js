@@ -224,6 +224,13 @@ class BuyeeScraper {
     let page = null;
     
     try {
+      // Extract auction ID from product URL
+      const auctionIdMatch = productUrl.match(/auction\/([a-z0-9]+)/i) || productUrl.match(/\/([a-z0-9]+)\?/i);
+      if (!auctionIdMatch) {
+        throw new Error('Invalid product URL format');
+      }
+      const auctionId = auctionIdMatch[1];
+  
       // Read and parse existing login state
       const loginStateRaw = fs.readFileSync('login.json', 'utf8');
       const loginState = JSON.parse(loginStateRaw);
@@ -280,13 +287,6 @@ class BuyeeScraper {
         ]);
       });
   
-      // Extract auction ID from product URL
-      const auctionIdMatch = productUrl.match(/auction\/([a-z0-9]+)/i);
-      if (!auctionIdMatch) {
-        throw new Error('Invalid product URL format');
-      }
-      const auctionId = auctionIdMatch[1];
-  
       // Navigate to bid page
       const bidUrl = `https://buyee.jp/bid/${auctionId}`;
       await page.goto(bidUrl, { 
@@ -295,12 +295,12 @@ class BuyeeScraper {
       });
   
       // Verify total amount API call
-      await page.evaluate((bidAmount, auctionId) => {
-        return fetch(`/api/v1/auction/total_amount?price=${bidAmount}&quantity=1&planId=99&auctionId=${auctionId}`, {
+      await page.evaluate((params) => {
+        return fetch(`/api/v1/auction/total_amount?price=${params.bidAmount}&quantity=1&planId=99&auctionId=${params.auctionId}`, {
           method: 'GET',
           credentials: 'include'
         });
-      }, bidAmount, auctionId);
+      }, { bidAmount, auctionId });
   
       // Fill bid amount and select plan
       await page.fill('input[name="bidYahoo[price]"], #bidYahoo_price', bidAmount.toString());
