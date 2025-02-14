@@ -224,24 +224,25 @@ class BuyeeScraper {
     let page = null;
     
     try {
-      // Setup browser with comprehensive context matching browser fingerprint
+      // Read and parse existing login state
+      const loginStateRaw = fs.readFileSync('login.json', 'utf8');
+      const loginState = JSON.parse(loginStateRaw);
+  
+      // Comprehensive browser launch with all stored cookies and headers
       browser = await chromium.launch({
         headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run',
-          '--no-zygote',
-          '--single-process'
+          '--disable-web-security',
+          '--disable-features=IsolateOrigins,site-per-process'
         ]
       });
   
-      context = await browser.newContext({ 
-        storageState: "login.json",
+      // Context creation with comprehensive settings
+      context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+        userAgent: loginState.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
         extraHTTPHeaders: {
           'accept': 'application/json, text/javascript, */*; q=0.01',
           'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -252,7 +253,32 @@ class BuyeeScraper {
         }
       });
   
+      // Add ALL cookies from login state
+      const cookiesToAdd = loginState.cookies.map(cookie => ({
+        ...cookie,
+        expires: cookie.expires || (Date.now() / 1000 + 86400), // Default 1-day expiry
+        secure: cookie.secure || false,
+        httpOnly: cookie.httpOnly || false,
+        sameSite: cookie.sameSite || 'Lax'
+      }));
+      await context.addCookies(cookiesToAdd);
+  
       page = await context.newPage();
+  
+      // Preliminary API calls mimicking browser behavior
+      await page.goto(productUrl, { 
+        waitUntil: 'networkidle',
+        timeout: 60000 
+      });
+  
+      // Perform cookie sync and other preparatory API calls
+      await page.evaluate(() => {
+        // Simulate browser-like API calls
+        return Promise.all([
+          fetch('/api/v1/cookie/get', { credentials: 'include' }),
+          fetch('/api/v1/watch_list/find', { credentials: 'include' })
+        ]);
+      });
   
       // Extract auction ID from product URL
       const auctionIdMatch = productUrl.match(/auction\/([a-z0-9]+)/i);
@@ -261,60 +287,60 @@ class BuyeeScraper {
       }
       const auctionId = auctionIdMatch[1];
   
-      // Perform preliminary API calls mimicking browser behavior
-      await page.goto(productUrl, { waitUntil: 'networkidle' });
-  
-      // Call cookie sync API
-      try {
-        await page.evaluate(() => {
-          return fetch('https://buyee.jp/api/v1/cookie/get', {
-            method: 'GET',
-            credentials: 'include'
-          });
-        });
-      } catch (cookieSyncError) {
-        console.log('Cookie sync optional:', cookieSyncError);
-      }
-  
       // Navigate to bid page
       const bidUrl = `https://buyee.jp/bid/${auctionId}`;
-      await page.goto(bidUrl, { waitUntil: 'networkidle' });
-  
-      // Verify total amount API call 
-      try {
-        await page.evaluate((bidAmount) => {
-          return fetch(`https://buyee.jp/api/v1/auction/total_amount?price=${bidAmount}&quantity=1&planId=99&auctionId=${auctionId}`, {
-            method: 'GET',
-            credentials: 'include'
-          });
-        }, bidAmount);
-      } catch (amountError) {
-        console.log('Amount verification optional:', amountError);
-      }
-  
-      // Bid submission logic
-      await page.fill('input[name="bidYahoo[price]"], #bidYahoo_price', bidAmount.toString());
-      
-      // Select plan
-      await page.evaluate(() => {
-        const planSelect = document.querySelector('#bidYahoo_plan');
-        planSelect.value = '99';
-        planSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await page.goto(bidUrl, { 
+        waitUntil: 'networkidle',
+        timeout: 60000 
       });
   
-      // Submit bid with navigation wait
-      await Promise.all([
-        page.waitForNavigation({ 
-          waitUntil: 'networkidle0',
-          timeout: 10000 
-        }),
-        page.click('#bid_submit')
-      ]);
+      // Verify total amount API call
+      await page.evaluate((bidAmount, auctionId) => {
+        return fetch(`/api/v1/auction/total_amount?price=${bidAmount}&quantity=1&planId=99&auctionId=${auctionId}`, {
+          method: 'GET',
+          credentials: 'include'
+        });
+      }, bidAmount, auctionId);
+  
+      // Fill bid amount and select plan
+      await page.fill('input[name="bidYahoo[price]"], #bidYahoo_price', bidAmount.toString());
+      await page.evaluate(() => {
+        const planSelect = document.querySelector('#bidYahoo_plan');
+        if (planSelect) {
+          planSelect.value = '99';
+          planSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+  
+      // Find and click submit button
+      const submitSelectors = [
+        '#bid_submit', 
+        'button[type="submit"]', 
+        'input[type="submit"]'
+      ];
+  
+      let submitButton = null;
+      for (const selector of submitSelectors) {
+        try {
+          submitButton = await page.$(selector);
+          if (submitButton) {
+            await submitButton.click();
+            break;
+          }
+        } catch {}
+      }
+  
+      // Wait for navigation with longer timeout
+      await page.waitForNavigation({ 
+        waitUntil: 'networkidle0',
+        timeout: 30000 
+      });
   
       // Verify completion page
       const currentUrl = page.url();
-      if (!currentUrl.includes('/bid/complete/')) {
-        await page.screenshot({ path: 'bid-submission-error.png' });
+      console.log('Current URL after submission:', currentUrl);
+  
+      if (!currentUrl.includes('/bid/complete/') && !currentUrl.includes('/complete/')) {
         throw new Error('Navigation to completion page failed');
       }
   
@@ -330,8 +356,12 @@ class BuyeeScraper {
   
     } catch (error) {
       console.error("Bid placement error:", error);
-      await page?.screenshot({ path: 'bid-error.png' });
       
+      try {
+        // Additional debug screenshot
+        await page?.screenshot({ path: 'bid-error.png' });
+      } catch {}
+  
       return { 
         success: false, 
         message: `Failed to place bid: ${error.message}`,
