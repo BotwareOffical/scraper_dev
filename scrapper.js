@@ -222,7 +222,7 @@ class BuyeeScraper {
     let browser = null;
     let context = null;
     let page = null;
-  
+    
     try {
       // Launch browser with necessary configurations
       browser = await chromium.launch({
@@ -284,22 +284,7 @@ class BuyeeScraper {
         console.log('No modal found or error removing modal:', modalError);
       }
   
-      // Wait for and verify bid button with retry logic
-      let bidButton = null;
-      for (let i = 0; i < 3; i++) {
-        try {
-          bidButton = await page.waitForSelector('#bidNow', { 
-            state: 'visible',
-            timeout: 10000 
-          });
-          if (bidButton) break;
-        } catch (err) {
-          if (i === 2) throw new Error('Bid button not found after retries');
-          await page.waitForTimeout(2000);
-        }
-      }
-  
-      // Directly navigate to bid page instead of clicking
+      // Directly navigate to bid page
       const bidUrl = `https://buyee.jp/bid/${auctionId}`;
       console.log('Navigating to bid URL:', bidUrl);
       
@@ -313,37 +298,19 @@ class BuyeeScraper {
         throw new Error('Session expired - please log in again');
       }
   
-      // Wait for bid form with retry
-      let bidInput = null;
-      for (let i = 0; i < 3; i++) {
-        try {
-          bidInput = await page.waitForSelector('input[name="bidYahoo[price]"], #bidYahoo_price', {
-            timeout: 10000
-          });
-          if (bidInput) break;
-        } catch (err) {
-          if (i === 2) throw new Error('Bid form not found after retries');
-          await page.waitForTimeout(2000);
-        }
-      }
+      // Wait for bid form
+      const bidInput = await page.waitForSelector('input[name="bidYahoo[price]"], #bidYahoo_price', {
+        timeout: 10000
+      });
   
       // Fill bid amount
       await bidInput.fill(bidAmount.toString());
       console.log('Bid amount filled:', bidAmount);
   
-      // Wait for and select plan with retry
-      let planSelect = null;
-      for (let i = 0; i < 3; i++) {
-        try {
-          planSelect = await page.waitForSelector('#bidYahoo_plan', {
-            timeout: 10000
-          });
-          if (planSelect) break;
-        } catch (err) {
-          if (i === 2) throw new Error('Plan selection not found after retries');
-          await page.waitForTimeout(2000);
-        }
-      }
+      // Select plan
+      const planSelect = await page.waitForSelector('#bidYahoo_plan', {
+        timeout: 10000
+      });
   
       // Set plan value
       await page.evaluate(() => {
@@ -353,34 +320,49 @@ class BuyeeScraper {
       });
       console.log('Plan value set to 99');
   
-      // Create bid details object (without file operations)
+      // Submit bid and wait for navigation
+      try {
+        await Promise.all([
+          page.waitForNavigation({ 
+            waitUntil: 'networkidle0',
+            timeout: 10000 
+          }),
+          page.click('#bid_submit')
+        ]);
+  
+        // Verify we landed on the completion page
+        const currentUrl = page.url();
+        if (!currentUrl.includes('/bid/complete/')) {
+          // Take a screenshot for debugging
+          await page.screenshot({ path: 'bid-submission-error.png' });
+          
+          // Try to get error message if available
+          const errorMessage = await page.evaluate(() => {
+            const errorEl = document.querySelector('.errorMessage, .error-message');
+            return errorEl ? errorEl.textContent : 'Unknown submission error';
+          });
+  
+          throw new Error(`Navigation to completion page failed. Error: ${errorMessage}`);
+        }
+  
+        console.log('Bid submitted successfully');
+      } catch (submissionError) {
+        console.error('Bid submission error:', submissionError);
+        await page.screenshot({ path: 'bid-submission-failure.png' });
+        throw submissionError;
+      }
+  
+      // Create bid details object
       const bidDetails = {
         productUrl,
         bidAmount,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        status: 'Submitted Successfully'
       };
-  
-      // Check if we're on the right page before declaring success
-      const currentUrl = page.url();
-      if (currentUrl.includes('signup/login')) {
-        return {
-          success: false,
-          message: 'Session expired - please log in again'
-        };
-      }
-  
-      // Verify the form is still present
-      const formPresent = await page.$('#bidYahoo_price');
-      if (!formPresent) {
-        return {
-          success: false,
-          message: 'Could not verify bid form after setting values'
-        };
-      }
   
       return {
         success: true,
-        message: `Successfully navigated to bid page and entered amount ${bidAmount}`,
+        message: `Successfully placed bid of ${bidAmount}`,
         details: bidDetails
       };
   
