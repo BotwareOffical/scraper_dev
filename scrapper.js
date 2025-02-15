@@ -726,6 +726,18 @@ class BuyeeScraper {
       throw new Error('Failed to refresh login session');
     }
   }
+  async cleanup() {
+    try {
+      if (this.browser) {
+        await this.browser.close();
+        this.browser = null;
+        console.log('Browser instance cleaned up successfully');
+      }
+    } catch (error) {
+      console.error('Error during browser cleanup:', error);
+      throw error;
+    }
+  }
   
   async checkLoginState() {
     try {

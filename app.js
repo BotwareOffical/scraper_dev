@@ -5,9 +5,16 @@ const BuyeeScraper = require('./scrapper');
 const logger = require('morgan');
 const fs = require('fs');
 const path = require('path');
-const { promisify } = require('util');
-const rimraf = promisify(require('rimraf'));
+const rimraf = require('rimraf');
 const bidFilePath = path.resolve(__dirname, './data/bids.json');
+
+// Initialize rimraf promise
+const rimrafAsync = (path) => new Promise((resolve, reject) => {
+  rimraf(path, (error) => {
+    if (error) reject(error);
+    else resolve();
+  });
+});
 
 const app = express();
 
@@ -79,8 +86,12 @@ async function cleanupSearchContexts() {
       
       // Delete files older than 30 minutes
       if (fileAge > 30 * 60 * 1000) {
-        await fs.promises.unlink(filePath);
-        console.log(`Cleaned up old search context: ${file}`);
+        try {
+          await fs.promises.unlink(filePath);
+          console.log(`Cleaned up old search context: ${file}`);
+        } catch (unlinkError) {
+          console.error(`Error deleting file ${file}:`, unlinkError);
+        }
       }
     }
   } catch (error) {
