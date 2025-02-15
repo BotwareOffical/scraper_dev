@@ -205,6 +205,7 @@ app.post('/search', async (req, res) => {
   }
 });
 
+// Update this endpoint in your app.js
 app.post('/load-more', async (req, res) => {
   const { searchContextId, pageSize = 100 } = req.body;
 
@@ -231,23 +232,25 @@ app.post('/load-more', async (req, res) => {
     // Get current search term
     const currentTerm = searchContext.terms[currentTermIndex];
 
-    // Perform search for next page
-    const searchResult = await scraper.scrapeSearchResults(
-      currentTerm.term, 
-      currentTerm.minPrice, 
-      currentTerm.maxPrice, 
-      currentPage
-    );
+    // Create new scraper instance for this request
+    const requestScraper = new BuyeeScraper();
 
-    // If no results, move to next term
-    if (searchResult.products.length === 0) {
-      currentTermIndex++;
-      currentPage = 1;
+    try {
+      // Perform search for next page
+      const searchResult = await requestScraper.scrapeSearchResults(
+        currentTerm.term, 
+        currentTerm.minPrice, 
+        currentTerm.maxPrice, 
+        currentPage
+      );
 
-      // Check if we have more terms
-      if (currentTermIndex < searchContext.terms.length) {
+      // If no results, try next term
+      if (searchResult.products.length === 0 && currentTermIndex < searchContext.terms.length - 1) {
+        currentTermIndex++;
+        currentPage = 1;
+        
         const nextTerm = searchContext.terms[currentTermIndex];
-        const nextSearchResult = await scraper.scrapeSearchResults(
+        const nextSearchResult = await requestScraper.scrapeSearchResults(
           nextTerm.term, 
           nextTerm.minPrice, 
           nextTerm.maxPrice, 
@@ -256,26 +259,29 @@ app.post('/load-more', async (req, res) => {
 
         searchResult.products = nextSearchResult.products;
       }
+
+      // Update search context
+      searchContext.results = [...searchContext.results, ...searchResult.products];
+      searchContext.currentTermIndex = currentTermIndex;
+      searchContext.currentPage = currentPage;
+      searchContext.lastUpdated = Date.now();
+
+      // Save updated context
+      fs.writeFileSync(searchContextPath, JSON.stringify(searchContext, null, 2));
+
+      res.json({
+        success: true,
+        results: searchResult.products,
+        count: searchResult.products.length,
+        totalResults: searchContext.totalResults,
+        currentTerm: searchContext.terms[currentTermIndex].term,
+        currentPage: currentPage,
+        searchContextId
+      });
+    } finally {
+      // Clean up scraper resources
+      await requestScraper.cleanup();
     }
-
-    // Update search context
-    searchContext.results.push(...searchResult.products);
-    searchContext.currentTermIndex = currentTermIndex;
-    searchContext.currentPage = currentPage;
-    searchContext.lastUpdated = Date.now();
-
-    // Save updated context
-    fs.writeFileSync(searchContextPath, JSON.stringify(searchContext, null, 2));
-
-    res.json({
-      success: true,
-      results: searchResult.products,
-      count: searchResult.products.length,
-      totalResults: searchContext.totalResults,
-      currentTerm: searchContext.terms[currentTermIndex].term,
-      currentPage: currentPage,
-      searchContextId
-    });
   } catch (error) {
     console.error('Load more error:', error);
     res.status(500).json({

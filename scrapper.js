@@ -258,6 +258,127 @@ class BuyeeScraper {
     }
   }
 
+  // Add this method to your BuyeeScraper class
+async scrapeDetails(urls = []) {
+  let context;
+  let page;
+  
+  try {
+    ({ context } = await this.setupBrowser());
+    page = await context.newPage();
+    
+    const detailedProducts = [];
+    
+    for (const productUrl of urls) {
+      try {
+        console.log(`Navigating to URL: ${productUrl}`);
+        await page.goto(productUrl, { 
+          waitUntil: 'domcontentloaded',
+          timeout: 30000 
+        });
+
+        const productDetails = await page.evaluate(() => {
+          // Title extraction
+          let title = 'No Title';
+          const titleElements = [
+            document.querySelector('h1'),
+            document.querySelector('.itemName'),
+            document.querySelector('.itemInfo__name'),
+            document.title
+          ];
+          for (const titleEl of titleElements) {
+            if (titleEl && titleEl.textContent) {
+              title = titleEl.textContent.trim();
+              break;
+            }
+          }
+
+          // Price extraction
+          let price = 'Price Not Available';
+          const priceElements = [
+            document.querySelector('.current_price .price'),
+            document.querySelector('.price'),
+            document.querySelector('.itemPrice')
+          ];
+          for (const priceEl of priceElements) {
+            if (priceEl && priceEl.textContent) {
+              price = priceEl.textContent.trim();
+              break;
+            }
+          }
+
+          // Time remaining extraction
+          let time_remaining = 'Time Not Available';
+          const timeElements = [
+            document.querySelector('.itemInformation__infoItem .g-text--attention'),
+            document.querySelector('.itemInfo__time span'),
+            document.querySelector('.timeLeft')
+          ];
+          for (const timeEl of timeElements) {
+            if (timeEl && timeEl.textContent) {
+              time_remaining = timeEl.textContent.trim();
+              break;
+            }
+          }
+
+          // Image extraction
+          const images = [];
+          const imageSelectors = [
+            '.flexslider .slides img',
+            '.itemImg img',
+            '.mainImage img',
+            '.g-thumbnail__image',
+            'ol.flex-control-nav li img'
+          ];
+          
+          for (const selector of imageSelectors) {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(element => {
+              const imgSrc = element.src || element.getAttribute('data-src');
+              if (imgSrc) {
+                // Clean up URL by removing query parameters
+                const cleanUrl = imgSrc.split('?')[0];
+                if (!images.includes(cleanUrl)) {
+                  images.push(cleanUrl);
+                }
+              }
+            });
+            if (images.length > 0) break;
+          }
+
+          return {
+            title,
+            price,
+            time_remaining,
+            url: window.location.href,
+            images: images.length > 0 ? images : []
+          };
+        });
+
+        detailedProducts.push(productDetails);
+        
+        // Add a small delay between requests to avoid rate limiting
+        await page.waitForTimeout(1000);
+        
+      } catch (error) {
+        console.error(`Error scraping details for ${productUrl}:`, error);
+        detailedProducts.push({
+          url: productUrl,
+          error: error.message
+        });
+      }
+    }
+
+    return detailedProducts;
+    
+  } catch (error) {
+    console.error('Details scraping error:', error);
+    return [];
+  } finally {
+    if (page) await page.close();
+  }
+}
+
   async placeBid(productUrl, bidAmount) {
     let browser = null;
     let context = null;
