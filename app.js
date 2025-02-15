@@ -134,6 +134,8 @@ app.post('/place-bid', async (req, res) => {
   }
 });
 
+// Update this in app.js
+// Search endpoint
 app.post('/search', async (req, res) => {
   const startTime = Date.now();
   const searchId = Math.random().toString(36).substring(7);
@@ -166,36 +168,69 @@ app.post('/search', async (req, res) => {
       currentPage: 1,
       results: [],
       totalResults: 0,
-      createdAt: Date.now() // Add timestamp for cleanup
+      createdAt: Date.now()
     };
 
-    // Process first search term
+    // Fetch first 4 pages
     const firstTerm = searchTerms[0];
-    const searchResult = await scraper.scrapeSearchResults(
-      firstTerm.term, 
-      firstTerm.minPrice, 
-      firstTerm.maxPrice, 
-      1
-    );
+    let allProducts = [];
+    let totalProducts = 0;
 
-    // Update search context
-    searchContext.results = searchResult.products;
-    searchContext.totalResults = searchResult.totalProducts;
+    // Create new scraper instance for initial search
+    const requestScraper = new BuyeeScraper();
 
-    // Save search context
-    fs.writeFileSync(searchContextPath, JSON.stringify(searchContext, null, 2));
+    try {
+      for (let page = 1; page <= 4; page++) {
+        const searchResult = await requestScraper.scrapeSearchResults(
+          firstTerm.term, 
+          firstTerm.minPrice, 
+          firstTerm.maxPrice, 
+          page
+        );
 
-    const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+        if (page === 1) {
+          totalProducts = searchResult.totalProducts;
+        }
 
-    res.json({
-      success: true,
-      results: searchResult.products,
-      count: searchResult.products.length,
-      totalResults: searchResult.totalProducts,
-      currentPage: 1,
-      searchContextId: searchId,
-      duration: totalDuration
-    });
+        if (searchResult.products.length > 0) {
+          allProducts = [...allProducts, ...searchResult.products];
+        }
+
+        // Break if we've got all products or no products returned
+        if (searchResult.products.length === 0 || allProducts.length >= totalProducts) {
+          break;
+        }
+
+        // Add a small delay between pages to avoid rate limiting
+        if (page < 4) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // Update search context with all information
+      searchContext.results = allProducts;
+      searchContext.totalResults = totalProducts;
+      searchContext.currentPage = 4;
+      searchContext.lastUpdated = Date.now();
+
+      // Save search context
+      fs.writeFileSync(searchContextPath, JSON.stringify(searchContext, null, 2));
+
+      const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+
+      res.json({
+        success: true,
+        results: allProducts,
+        count: allProducts.length,
+        totalResults: totalProducts,
+        currentPage: 4,
+        searchContextId: searchId,
+        duration: totalDuration
+      });
+    } finally {
+      // Clean up scraper resources
+      await requestScraper.cleanup();
+    }
   } catch (error) {
     console.error('Search error:', error);
     res.status(500).json({
@@ -205,7 +240,7 @@ app.post('/search', async (req, res) => {
   }
 });
 
-// Update this endpoint in your app.js
+// Load more endpoint
 app.post('/load-more', async (req, res) => {
   const { searchContextId, pageSize = 100 } = req.body;
 
@@ -224,46 +259,66 @@ app.post('/load-more', async (req, res) => {
     }
 
     const searchContext = JSON.parse(fs.readFileSync(searchContextPath, 'utf8'));
-
-    // Determine next page/term
-    let currentTermIndex = searchContext.currentTermIndex;
-    let currentPage = searchContext.currentPage + 1;
-
-    // Get current search term
+    const currentTermIndex = searchContext.currentTermIndex;
+    const startPage = searchContext.currentPage + 1;
     const currentTerm = searchContext.terms[currentTermIndex];
 
     // Create new scraper instance for this request
     const requestScraper = new BuyeeScraper();
 
     try {
-      // Perform search for next page
-      const searchResult = await requestScraper.scrapeSearchResults(
-        currentTerm.term, 
-        currentTerm.minPrice, 
-        currentTerm.maxPrice, 
-        currentPage
-      );
+      // Fetch next 4 pages
+      let newProducts = [];
+      let lastSuccessfulPage = startPage - 1;
+      
+      for (let page = startPage; page < startPage + 4; page++) {
+        const searchResult = await requestScraper.scrapeSearchResults(
+          currentTerm.term, 
+          currentTerm.minPrice, 
+          currentTerm.maxPrice, 
+          page
+        );
 
-      // If no results, try next term
-      if (searchResult.products.length === 0 && currentTermIndex < searchContext.terms.length - 1) {
-        currentTermIndex++;
-        currentPage = 1;
+        if (searchResult.products.length > 0) {
+          newProducts = [...newProducts, ...searchResult.products];
+          lastSuccessfulPage = page;
+        }
+
+        // Break if we got no products or reached total
+        if (searchResult.products.length === 0 || 
+            searchContext.results.length + newProducts.length >= searchContext.totalResults) {
+          break;
+        }
+
+        // Add a small delay between pages
+        if (page < startPage + 3) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // If no results with current term, try next term
+      if (newProducts.length === 0 && currentTermIndex < searchContext.terms.length - 1) {
+        const nextTermIndex = currentTermIndex + 1;
+        const nextTerm = searchContext.terms[nextTermIndex];
         
-        const nextTerm = searchContext.terms[currentTermIndex];
-        const nextSearchResult = await requestScraper.scrapeSearchResults(
+        // Try first page of next term
+        const nextTermResult = await requestScraper.scrapeSearchResults(
           nextTerm.term, 
           nextTerm.minPrice, 
           nextTerm.maxPrice, 
           1
         );
 
-        searchResult.products = nextSearchResult.products;
+        if (nextTermResult.products.length > 0) {
+          newProducts = nextTermResult.products;
+          searchContext.currentTermIndex = nextTermIndex;
+          lastSuccessfulPage = 1;
+        }
       }
 
       // Update search context
-      searchContext.results = [...searchContext.results, ...searchResult.products];
-      searchContext.currentTermIndex = currentTermIndex;
-      searchContext.currentPage = currentPage;
+      searchContext.currentPage = lastSuccessfulPage;
+      searchContext.results = newProducts; // Store only new results
       searchContext.lastUpdated = Date.now();
 
       // Save updated context
@@ -271,11 +326,11 @@ app.post('/load-more', async (req, res) => {
 
       res.json({
         success: true,
-        results: searchResult.products,
-        count: searchResult.products.length,
+        results: newProducts,
+        count: newProducts.length,
         totalResults: searchContext.totalResults,
         currentTerm: searchContext.terms[currentTermIndex].term,
-        currentPage: currentPage,
+        currentPage: lastSuccessfulPage,
         searchContextId
       });
     } finally {
