@@ -5,6 +5,8 @@ const BuyeeScraper = require('./scrapper');
 const logger = require('morgan');
 const fs = require('fs');
 const path = require('path');
+const { promisify } = require('util');
+const rimraf = promisify(require('rimraf'));
 const bidFilePath = path.resolve(__dirname, './data/bids.json');
 
 const app = express();
@@ -33,6 +35,16 @@ const corsOptions = {
   optionsSuccessStatus: 204
 };
 
+// Initialize last activity timestamp
+let lastActivityTimestamp = Date.now();
+const INACTIVITY_TIMEOUT = 45 * 60 * 1000; // 45 minutes in milliseconds
+
+// Activity tracking middleware
+app.use((req, res, next) => {
+  lastActivityTimestamp = Date.now();
+  next();
+});
+
 app.use((err, req, res, next) => {
   if (err.name === 'CORS Error') {
     console.error('CORS Error:', {
@@ -53,6 +65,28 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 const scraper = new BuyeeScraper();
+
+// Cleanup function for search contexts
+async function cleanupSearchContexts() {
+  try {
+    const files = await fs.promises.readdir(__dirname);
+    const searchContextFiles = files.filter(file => file.startsWith('search_context_'));
+    
+    for (const file of searchContextFiles) {
+      const filePath = path.join(__dirname, file);
+      const stats = await fs.promises.stat(filePath);
+      const fileAge = Date.now() - stats.mtime.getTime();
+      
+      // Delete files older than 30 minutes
+      if (fileAge > 30 * 60 * 1000) {
+        await fs.promises.unlink(filePath);
+        console.log(`Cleaned up old search context: ${file}`);
+      }
+    }
+  } catch (error) {
+    console.error('Error cleaning up search contexts:', error);
+  }
+}
 
 // Place bid endpoint
 app.post('/place-bid', async (req, res) => {
@@ -94,6 +128,9 @@ app.post('/search', async (req, res) => {
   const searchId = Math.random().toString(36).substring(7);
 
   try {
+    // Clean up old search contexts first
+    await cleanupSearchContexts();
+
     const { 
       terms: searchTerms = [], 
       page = 1, 
@@ -117,7 +154,8 @@ app.post('/search', async (req, res) => {
       currentTermIndex: 0,
       currentPage: 1,
       results: [],
-      totalResults: 0
+      totalResults: 0,
+      createdAt: Date.now() // Add timestamp for cleanup
     };
 
     // Process first search term
@@ -156,13 +194,23 @@ app.post('/search', async (req, res) => {
   }
 });
 
-// New endpoint to load more results
 app.post('/load-more', async (req, res) => {
   const { searchContextId, pageSize = 100 } = req.body;
 
   try {
+    // Clean up old search contexts first
+    await cleanupSearchContexts();
+
     // Load search context
     const searchContextPath = path.join(__dirname, `search_context_${searchContextId}.json`);
+    
+    if (!fs.existsSync(searchContextPath)) {
+      return res.status(404).json({
+        success: false,
+        error: 'Search context not found'
+      });
+    }
+
     const searchContext = JSON.parse(fs.readFileSync(searchContextPath, 'utf8'));
 
     // Determine next page/term
@@ -203,6 +251,7 @@ app.post('/load-more', async (req, res) => {
     searchContext.results.push(...searchResult.products);
     searchContext.currentTermIndex = currentTermIndex;
     searchContext.currentPage = currentPage;
+    searchContext.lastUpdated = Date.now();
 
     // Save updated context
     fs.writeFileSync(searchContextPath, JSON.stringify(searchContext, null, 2));
@@ -237,7 +286,6 @@ app.post('/details', async (req, res) => {
       });
     }
 
-    // Log incoming URLs for debugging
     console.log('Received URLs for details:', urls);
 
     const updatedDetails = await scraper.scrapeDetails(urls);
@@ -305,9 +353,7 @@ app.post('/login', async (req, res) => {
 
     const loginResult = await scraper.login(username, password);
     
-    // Check if 2FA is required
     if (loginResult.requiresTwoFactor) {
-      // Return special response indicating 2FA is needed
       return res.json({
         success: true,
         requiresTwoFactor: true,
@@ -315,7 +361,6 @@ app.post('/login', async (req, res) => {
       });
     }
 
-    // Regular successful login
     res.json({
       success: true,
       message: 'Login successful',
@@ -330,7 +375,6 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Update bid prices endpoint
 app.post('/update-bid-prices', async (req, res) => {
   try {
     console.log('Received update bid prices request:', req.body);
@@ -403,7 +447,7 @@ app.post('/login-two-factor', async (req, res) => {
   }
 });
 
-// Debug middleware - add before routes
+// Debug middleware
 app.use((req, res, next) => {
   console.log('\n=== Request ===');
   console.log(`${req.method} ${req.url}`);
@@ -416,7 +460,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Error handling - keep as is at end of file
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(500).json({
@@ -427,8 +471,49 @@ app.use((err, req, res, next) => {
 
 const SERVER_TIMEOUT = 900000; // 15 minutes
 const PORT = process.env.PORT || 10000;
+
+// Create server with timeout settings
 const server = app.listen(PORT, () => console.log(`Server running on ${PORT}`));
 server.timeout = SERVER_TIMEOUT;
 server.keepAliveTimeout = 120000;
 server.headersTimeout = 120000;
 
+// Inactivity check interval
+const inactivityCheck = setInterval(() => {
+  const timeSinceLastActivity = Date.now() - lastActivityTimestamp;
+  
+  if (timeSinceLastActivity > INACTIVITY_TIMEOUT) {
+    console.log('No activity for 45 minutes, shutting down server...');
+    
+    // Cleanup before shutdown
+    clearInterval(inactivityCheck);
+    
+    // Close browser instances
+    scraper.cleanup().then(() => {
+      // Close the server
+      server.close(() => {
+        console.log('Server shut down gracefully');
+        process.exit(0);
+      });
+    }).catch(error => {
+      console.error('Error during cleanup:', error);
+      process.exit(1);
+    });
+  }
+}, 60000); // Check every minute
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  clearInterval(inactivityCheck);
+  
+  scraper.cleanup().then(() => {
+    server.close(() => {
+      console.log('Server shut down gracefully');
+      process.exit(0);
+    });
+  }).catch(error => {
+    console.error('Error during cleanup:', error);
+    process.exit(1);
+  });
+});

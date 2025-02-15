@@ -8,11 +8,20 @@ class BuyeeScraper {
   constructor() {
     this.baseUrl = "https://buyee.jp";
     this.browser = null;
+    this.lastBrowserReset = Date.now();
   }
 
-  // Setup browser and context
+  // Single, merged setupBrowser function that handles both memory and authentication
   async setupBrowser() {
     try {
+      // Memory management: Reset browser every hour
+      if (this.browser && Date.now() - this.lastBrowserReset > 60 * 60 * 1000) {
+        console.log('Resetting browser due to age');
+        await this.browser.close();
+        this.browser = null;
+      }
+
+      // Create new browser if needed
       if (!this.browser || !this.browser.isConnected()) {
         this.browser = await chromium.launch({
           headless: true,
@@ -20,36 +29,67 @@ class BuyeeScraper {
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
+            '--disable-features=IsolateOrigins,site-per-process',
+            // Memory optimization flags
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process',
+            // Heroku-specific flags
+            '--no-zygote',
+            '--js-flags="--max-old-space-size=460"'
           ]
         });
+        this.lastBrowserReset = Date.now();
       }
       
       // Load stored login state
-      const loginData = JSON.parse(fs.readFileSync('login.json', 'utf8'));
-      
-      // Create context with stored state
+      let loginState;
+      try {
+        if (fs.existsSync('temp_login.json')) {
+          console.log('Using temporary login state');
+          loginState = JSON.parse(fs.readFileSync('temp_login.json', 'utf8'));
+        } else if (fs.existsSync('login.json')) {
+          console.log('Using full login state');
+          loginState = JSON.parse(fs.readFileSync('login.json', 'utf8'));
+        } else {
+          console.log('No login state found, creating fresh context');
+          loginState = { cookies: [] };
+        }
+      } catch (e) {
+        console.warn('Error reading login state:', e);
+        loginState = { cookies: [] };
+      }
+
+      // Create context with comprehensive settings
       const context = await this.browser.newContext({
         viewport: { width: 1280, height: 720 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: loginState.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'en-US',
         timezoneId: 'Europe/Berlin',
-        storageState: 'login.json',
-        acceptDownloads: true
+        acceptDownloads: true,
+        extraHTTPHeaders: {
+          'accept': 'application/json, text/javascript, */*; q=0.01',
+          'accept-language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+          'x-requested-with': 'XMLHttpRequest',
+          'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Linux"'
+        }
       });
       
-      // Add cookies explicitly
-      for (const cookie of loginData.cookies) {
-        await context.addCookies([{
+      // Add cookies with complete properties
+      if (loginState.cookies && loginState.cookies.length > 0) {
+        const cookiesToAdd = loginState.cookies.map(cookie => ({
           ...cookie,
           secure: cookie.secure || false,
           httpOnly: cookie.httpOnly || false,
           sameSite: cookie.sameSite || 'Lax',
-          expires: cookie.expires || (Date.now() / 1000 + 86400)
-        }]);
+          expires: cookie.expires || (Date.now() / 1000 + 86400) // 24 hour expiry
+        }));
+        await context.addCookies(cookiesToAdd);
       }
       
-      // Log the setup
+      // Log the setup for debugging
       const cookies = await context.cookies();
       console.log('Browser context created with cookies:', 
         cookies.map(c => `${c.name}=${c.value}`).join('; '));
@@ -548,68 +588,7 @@ class BuyeeScraper {
       if (page) await page.close();
     }
   }
-  
-  // Modify setupBrowser to handle missing files gracefully
-  async setupBrowser() {
-    try {
-      if (!this.browser || !this.browser.isConnected()) {
-        this.browser = await chromium.launch({
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
-          ]
-        });
-      }
-      
-      let loginState;
-      
-      // Try to load either temp_login.json or login.json
-      try {
-        if (fs.existsSync('temp_login.json')) {
-          console.log('Using temporary login state');
-          loginState = JSON.parse(fs.readFileSync('temp_login.json', 'utf8'));
-        } else if (fs.existsSync('login.json')) {
-          console.log('Using full login state');
-          loginState = JSON.parse(fs.readFileSync('login.json', 'utf8'));
-        } else {
-          console.log('No login state found, creating fresh context');
-          loginState = { cookies: [] };
-        }
-      } catch (e) {
-        console.warn('Error reading login state:', e);
-        loginState = { cookies: [] };
-      }
-      
-      // Create context with stored state
-      const context = await this.browser.newContext({
-        viewport: { width: 1280, height: 720 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        locale: 'en-US',
-        timezoneId: 'Europe/Berlin',
-        acceptDownloads: true
-      });
-      
-      // Add cookies explicitly
-      if (loginState.cookies && loginState.cookies.length > 0) {
-        await context.addCookies(loginState.cookies.map(cookie => ({
-          ...cookie,
-          secure: cookie.secure || false,
-          httpOnly: cookie.httpOnly || false,
-          sameSite: cookie.sameSite || 'Lax',
-          expires: cookie.expires || (Date.now() / 1000 + 86400)
-        })));
-      }
-      
-      return { browser: this.browser, context };
-    } catch (error) {
-      console.error('Browser setup failed:', error);
-      throw error;
-    }
-  }
-  
+
   async submitTwoFactorCode(twoFactorCode) {
     let context;
     let page;
