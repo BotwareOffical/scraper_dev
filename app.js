@@ -305,22 +305,33 @@ app.post('/details', async (req, res) => {
 
     console.log('Received URLs for details:', urls);
 
-    const updatedDetails = await scraper.scrapeDetails(urls);
+    // Create a new scraper instance for this request
+    const requestScraper = new BuyeeScraper();
 
-    console.log('Scraped Details:', updatedDetails);
+    try {
+      const updatedDetails = await requestScraper.scrapeDetails(urls);
+      console.log('Scraped Details:', updatedDetails);
 
-    if (updatedDetails.length === 0) {
-      return res.status(200).json({
+      // Check if we got any valid details
+      const validDetails = updatedDetails.filter(detail => !detail.error);
+
+      if (validDetails.length === 0) {
+        console.log('No valid details found');
+        return res.status(200).json({
+          success: true,
+          updatedDetails: [],
+          message: 'No valid details could be retrieved'
+        });
+      }
+
+      res.json({
         success: true,
-        updatedDetails: [],
-        error: 'No details found for the provided URLs'
+        updatedDetails: validDetails,
       });
+    } finally {
+      // Clean up scraper resources
+      await requestScraper.cleanup();
     }
-
-    res.json({
-      success: true,
-      updatedDetails,
-    });
   } catch (error) {
     console.error('Details error:', error.message);
     res.status(500).json({ 
@@ -329,6 +340,7 @@ app.post('/details', async (req, res) => {
     });
   }
 });
+
 
 app.get('/bids', (req, res) => {
   try {
