@@ -312,13 +312,10 @@ class BuyeeScraper {
   
       page = await context.newPage();
   
-      // Reduce timeouts while keeping all functionality
-      const reducedTimeout = 15000; // 15 seconds
-
       // Preliminary API calls mimicking browser behavior
       await page.goto(productUrl, { 
-        waitUntil: 'domcontentloaded', // Changed from networkidle for faster response
-        timeout: reducedTimeout 
+        waitUntil: 'networkidle',
+        timeout: 60000 
       });
   
       // Perform cookie sync and other preparatory API calls
@@ -330,11 +327,11 @@ class BuyeeScraper {
         ]);
       });
   
-      // Navigate to bid page with reduced timeout
+      // Navigate to bid page
       const bidUrl = `https://buyee.jp/bid/${auctionId}`;
       await page.goto(bidUrl, { 
-        waitUntil: 'domcontentloaded', // Changed from networkidle for faster response
-        timeout: reducedTimeout 
+        waitUntil: 'networkidle',
+        timeout: 60000 
       });
   
       // Verify total amount API call
@@ -373,33 +370,23 @@ class BuyeeScraper {
         } catch {}
       }
   
-      // Shorter wait for navigation
+      // Wait for navigation with longer timeout
       await page.waitForNavigation({ 
-        waitUntil: 'domcontentloaded', // Changed from networkidle0 for faster response
-        timeout: reducedTimeout 
+        waitUntil: 'networkidle0',
+        timeout: 30000 
       });
   
       // Verify completion page
       const currentUrl = page.url();
       console.log('Current URL after submission:', currentUrl);
   
-      // More lenient URL check
-      if (currentUrl.includes('/bid/complete/') || currentUrl.includes('/complete/')) {
-        return {
-          success: true,
-          message: `Successfully placed bid of ${bidAmount}`,
-          details: {
-            productUrl,
-            bidAmount,
-            timestamp: new Date().toISOString()
-          }
-        };
+      if (!currentUrl.includes('/bid/complete/') && !currentUrl.includes('/complete/')) {
+        throw new Error('Navigation to completion page failed');
       }
-      
-      // If we get here, assume bid was placed but verification is taking too long
+  
       return {
         success: true,
-        message: `Bid of ${bidAmount} is being processed`,
+        message: `Successfully placed bid of ${bidAmount}`,
         details: {
           productUrl,
           bidAmount,
@@ -415,10 +402,9 @@ class BuyeeScraper {
         await page?.screenshot({ path: 'bid-error.png' });
       } catch {}
   
-      // More lenient error handling
       return { 
-        success: true, // Changed to true since bids often succeed despite errors
-        message: `Bid is being processed`,
+        success: false, 
+        message: `Failed to place bid: ${error.message}`,
         debug: {
           currentUrl: page?.url(),
           error: error.message
@@ -431,6 +417,7 @@ class BuyeeScraper {
       if (browser) await browser.close().catch(console.error);
     }
   }
+
     
   // Add retry utility
   async retry(fn, retries = 3) {
